@@ -124,6 +124,7 @@ def profile_likelihood(
     prior_mu=None,
     prior_sigma=None,
     phi_init=None,
+    bounds=None,
 ):
     """Profile-likelihood curve for parameter `idx` over `grid`.
 
@@ -131,6 +132,15 @@ def profile_likelihood(
     `theta_hat` minimizing the least-squares (+optional prior) cost. Then for
     each value v in `grid`, fixes phi[idx]=v and re-optimizes the remaining 4
     free parameters, recording the achieved cost.
+
+    Parameters
+    ----------
+    bounds : optional (n,2) sequence of (lo, hi) box-constraints on the full
+        phi. When the prior is excluded (likelihood-only profile) these keep the
+        free-parameter re-optimisation inside the physical region; without them
+        an unconstrained free `log_r0` can overflow `exp` and yield NaN costs.
+        Bounds do not add curvature inside the feasible region, so genuinely
+        flat (non-identifiable) directions stay flat.
 
     Returns
     -------
@@ -143,6 +153,7 @@ def profile_likelihood(
         patient, times, mask, Y_obs, noise_sigma, prior_mu=prior_mu, prior_sigma=prior_sigma
     )
     grad_cost = jax.grad(cost)
+    bounds = None if bounds is None else [tuple(b) for b in bounds]
 
     def _full_obj(x):
         xj = jnp.asarray(x, dtype=jnp.float32)
@@ -161,12 +172,13 @@ def profile_likelihood(
         x0 = np.asarray(phi_init, dtype=np.float64)
 
     # --- Full 5-param fit -> theta_hat, cost0 ---
-    res = minimize(_full_obj, x0, jac=True, method="L-BFGS-B")
+    res = minimize(_full_obj, x0, jac=True, method="L-BFGS-B", bounds=bounds)
     theta_hat = np.asarray(res.x, dtype=np.float64)
     cost0 = float(res.fun)
 
     n = theta_hat.shape[0]
     free_idx = [k for k in range(n) if k != idx]
+    bounds_free = None if bounds is None else [bounds[k] for k in free_idx]
 
     def _profile_obj_factory(v):
         v32 = np.float64(v)
@@ -188,7 +200,7 @@ def profile_likelihood(
     xfree0 = theta_hat[free_idx].copy()
     for i, v in enumerate(grid):
         obj = _profile_obj_factory(v)
-        r = minimize(obj, xfree0, jac=True, method="L-BFGS-B")
+        r = minimize(obj, xfree0, jac=True, method="L-BFGS-B", bounds=bounds_free)
         costs[i] = float(r.fun)
 
     return grid, np.asarray(costs, dtype=np.float64)

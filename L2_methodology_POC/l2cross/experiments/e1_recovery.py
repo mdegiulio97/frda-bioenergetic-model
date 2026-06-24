@@ -40,8 +40,17 @@ PHI_NAMES = priors.PHI_NAMES
 PRIOR_STD = np.asarray(priors.POP_SIGMA, dtype=np.float64)
 PRIOR_MU = np.asarray(priors.POP_MU, dtype=np.float64)
 
-# Parameters expected to be well identified for a single patient.
-WELL_ID = [0, 4]  # log_r0, t0
+# A parameter counts as "data-informed" when its rich-regime Laplace std
+# contracts to <= this fraction of the prior std. Derived, NOT assumed: the
+# informed set is whatever the data actually contract (see part1_contraction).
+INFORMED_RATIO_THR = 0.90
+
+# Physical box-constraints on phi for the likelihood-only profile re-optimisation.
+# Wide and physically motivated (NOT prior-informed): they only prevent the
+# unconstrained free log_r0 from overflowing exp() into NaN; they add no
+# curvature inside the feasible region, so flat directions stay flat.
+#   log_r0 in [-6,0] -> r0 in [0.0025, 1.0]/yr; theta_* in [0,1]; t0 in [-5,45] yr.
+PHI_BOUNDS = [(-6.0, 0.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (-5.0, 45.0)]
 
 _FIG_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "figures")
@@ -117,12 +126,18 @@ def part1_contraction(patient, phi_true, seed=0):
     _print_table("RICH", phi_hat_rich, std_rich, ratio_rich)
     _print_table("SPARSE", phi_hat_sparse, std_sparse, ratio_sparse)
 
-    informative = [PHI_NAMES[i] for i in range(5) if ratio_rich[i] < 1.0]
+    informed = [PHI_NAMES[i] for i in range(5) if ratio_rich[i] <= INFORMED_RATIO_THR]
+    prior_dom = [PHI_NAMES[i] for i in range(5) if ratio_rich[i] > INFORMED_RATIO_THR]
+    sparse_informed = [
+        PHI_NAMES[i] for i in range(5) if ratio_sparse[i] <= INFORMED_RATIO_THR
+    ]
     print(
-        "\n  Commentary: contraction (ratio<1) concentrates on "
-        f"{informative if informative else 'NONE'}; "
-        "the three theta_* stay ~prior (ratio~1), confirming weak "
-        "identifiability for a single patient even in the rich regime."
+        f"\n  Commentary: in the RICH regime the data contract "
+        f"{informed if informed else 'NONE'} "
+        f"(ratio<={INFORMED_RATIO_THR}); {prior_dom} stay prior-dominated. "
+        f"In the SPARSE regime the informed set is "
+        f"{sparse_informed if sparse_informed else 'EMPTY'} - acquisition, not "
+        "the model, is the binding constraint on single-patient recovery."
     )
 
     return {
@@ -147,7 +162,7 @@ def part1_contraction(patient, phi_true, seed=0):
 # --------------------------------------------------------------------------- #
 # Part 2: cohort coverage
 # --------------------------------------------------------------------------- #
-def part2_coverage(n=12, seed=1):
+def part2_coverage(informed_idx, n=12, seed=1):
     import jax
 
     print("\n" + "=" * 72)
@@ -201,19 +216,21 @@ def part2_coverage(n=12, seed=1):
     print("\n  Coverage table (target nominal = 0.95):")
     print(f"    {'param':<14}{'n_valid':>9}{'coverage':>11}")
     for i, name in enumerate(PHI_NAMES):
-        flag = "  well-id" if i in WELL_ID else "  weak-id"
+        flag = "  data-informed" if i in informed_idx else "  prior-dominated"
         cov_str = f"{coverage[i]:.3f}" if np.isfinite(coverage[i]) else "  nan"
         print(f"    {name:<14}{n_valid[i]:>9}{cov_str:>11}{flag}")
 
     wid = ", ".join(
-        f"{PHI_NAMES[i]}={coverage[i]:.2f}" for i in WELL_ID if np.isfinite(coverage[i])
+        f"{PHI_NAMES[i]}={coverage[i]:.2f}"
+        for i in informed_idx
+        if np.isfinite(coverage[i])
     )
     print(
-        "\n  Commentary: coverage for the well-identified params "
-        f"({wid}) is meaningful because their Laplace std is data-driven. "
-        "For the theta_* the Laplace CI is essentially the prior band, so any "
-        "'coverage' there reflects the prior, not recovery - it is reported "
-        "for completeness, not as evidence of identifiability."
+        "\n  Commentary: coverage is meaningful ONLY for the data-informed "
+        f"params ({wid if wid else 'NONE'}), whose Laplace CI is data-driven. "
+        "For the prior-dominated params the Laplace CI is ~the prior band and "
+        "the truth is itself drawn from the prior, so ~nominal coverage there "
+        "is vacuous-by-construction, NOT evidence of recovery."
     )
 
     return coverage, n_valid
@@ -224,8 +241,15 @@ def part2_coverage(n=12, seed=1):
 # --------------------------------------------------------------------------- #
 def part3_profiles(patient, phi_true, rich, n_grid=15):
     print("\n" + "=" * 72)
-    print("PART 3 - profile-likelihood identifiability maps (rich regime)")
+    print("PART 3 - profile-likelihood identifiability maps (rich, LIKELIHOOD-ONLY)")
     print("=" * 72)
+    print(
+        "  prior EXCLUDED from the profile objective: a +-2sigma grid with the\n"
+        "  prior in would cross 1.92 by construction. The dashed prior-only\n"
+        "  reference is overlaid so data-driven curvature is read as the gap\n"
+        "  between the solid (likelihood) and dashed (prior) curves.",
+        flush=True,
+    )
 
     sched = rich["schedule"]
     Y_obs = rich["Y_obs"]
@@ -245,6 +269,8 @@ def part3_profiles(patient, phi_true, rich, n_grid=15):
             flush=True,
         )
         t0 = time.time()
+        # LIKELIHOOD-ONLY profile: no prior_mu / prior_sigma passed; physical
+        # box-constraints keep the free re-optimisation finite (no exp overflow).
         g, costs = profile_likelihood(
             patient,
             times,
@@ -253,17 +279,33 @@ def part3_profiles(patient, phi_true, rich, n_grid=15):
             noise,
             idx,
             grid,
-            prior_mu=PRIOR_MU,
-            prior_sigma=PRIOR_STD,
+            bounds=PHI_BOUNDS,
         )
         dcost = costs - np.min(costs)
+        # Analytic prior-only reference: 0.5*((v-mu)/sigma)^2, normalised to its
+        # own minimum over the grid for comparability.
+        prior_dcost = 0.5 * ((grid - PRIOR_MU[idx]) / PRIOR_STD[idx]) ** 2
+        prior_dcost = prior_dcost - np.min(prior_dcost)
         crosses = bool(np.any(dcost > THRESHOLD_1DOF))
-        verdict = "identifiable (profile crosses 1.92)" if crosses else "FLAT -> non-identifiable"
+        verdict = (
+            "identifiable from DATA (likelihood profile crosses 1.92)"
+            if crosses
+            else "FLAT -> not identifiable from data alone"
+        )
         print(
             f"    done in {time.time() - t0:.1f}s | "
-            f"max(dcost)={dcost.max():.3f} -> {verdict}"
+            f"max(dcost_lik)={dcost.max():.3f} "
+            f"(prior-only ref max={prior_dcost.max():.3f}) -> {verdict}"
         )
-        profiles.append({"idx": idx, "grid": g, "dcost": dcost, "crosses": crosses})
+        profiles.append(
+            {
+                "idx": idx,
+                "grid": g,
+                "dcost": dcost,
+                "prior_dcost": prior_dcost,
+                "crosses": crosses,
+            }
+        )
 
     return profiles
 
@@ -275,15 +317,24 @@ def fig_contraction(rich, path):
     ratio = rich["ratio"]
     fig, ax = plt.subplots(figsize=(7, 4))
     x = np.arange(5)
-    colors = ["#2c7fb8" if r < 1.0 else "#bdbdbd" for r in ratio]
+    colors = ["#2c7fb8" if r <= INFORMED_RATIO_THR else "#bdbdbd" for r in ratio]
     bars = ax.bar(x, ratio, color=colors)
-    ax.axhline(1.0, color="k", ls="--", lw=1, label="ratio = 1 (no contraction)")
+    ax.axhline(
+        INFORMED_RATIO_THR,
+        color="k",
+        ls="--",
+        lw=1,
+        label=f"ratio = {INFORMED_RATIO_THR} (data-informed threshold)",
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(PHI_NAMES, rotation=20, ha="right")
     ax.set_ylabel("Laplace_std / prior_std")
-    ax.set_title("E1 posterior contraction (rich regime)\nbars < 1 = informative")
+    ax.set_title(
+        "E1 posterior contraction (rich regime)\n"
+        f"bars <= {INFORMED_RATIO_THR} = data-informed (blue)"
+    )
     for i, b in enumerate(bars):
-        tag = "informative" if ratio[i] < 1.0 else "~prior"
+        tag = "informed" if ratio[i] <= INFORMED_RATIO_THR else "~prior"
         ax.text(
             b.get_x() + b.get_width() / 2,
             b.get_height() + 0.02,
@@ -303,11 +354,26 @@ def fig_profiles(profiles, path):
     fig, axes = plt.subplots(1, 5, figsize=(16, 3.2), sharey=True)
     for ax, prof in zip(axes, profiles):
         idx = prof["idx"]
-        ax.plot(prof["grid"], prof["dcost"], "o-", color="#2c7fb8", ms=3)
+        ax.plot(
+            prof["grid"],
+            prof["prior_dcost"],
+            "--",
+            color="#999999",
+            lw=1.2,
+            label="prior-only ref",
+        )
+        ax.plot(
+            prof["grid"],
+            prof["dcost"],
+            "o-",
+            color="#2c7fb8",
+            ms=3,
+            label="likelihood profile",
+        )
         ax.axhline(THRESHOLD_1DOF, color="r", ls="--", lw=1)
         ax.set_title(PHI_NAMES[idx], fontsize=10)
         ax.set_xlabel("phi value")
-        sub = "crosses" if prof["crosses"] else "FLAT"
+        sub = "data-identifiable" if prof["crosses"] else "prior-dominated"
         ax.text(
             0.5,
             0.92,
@@ -319,27 +385,31 @@ def fig_profiles(profiles, path):
             color=("#2c7fb8" if prof["crosses"] else "#d95f02"),
         )
     axes[0].set_ylabel("cost - cost_min")
+    axes[0].legend(loc="upper center", fontsize=7)
     fig.suptitle(
-        "E1 profile likelihood (red line = 1.92, 95% / 1 dof); "
-        "flat profile = non-identifiable",
-        fontsize=11,
+        "E1 profile likelihood, LIKELIHOOD-ONLY (red = 1.92, 95% / 1 dof); "
+        "solid above dashed prior ref = data-identifiable, solid tracking dashed = prior-dominated",
+        fontsize=10,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(path, dpi=130)
     plt.close(fig)
 
 
-def fig_coverage(coverage, path):
+def fig_coverage(coverage, informed_idx, path):
     fig, ax = plt.subplots(figsize=(7, 4))
     x = np.arange(5)
     vals = np.where(np.isfinite(coverage), coverage, 0.0)
-    colors = ["#2c7fb8" if i in WELL_ID else "#bdbdbd" for i in range(5)]
+    colors = ["#2c7fb8" if i in informed_idx else "#bdbdbd" for i in range(5)]
     bars = ax.bar(x, vals, color=colors)
     ax.axhline(0.95, color="r", ls="--", lw=1, label="nominal 0.95")
     ax.set_xticks(x)
     ax.set_xticklabels(PHI_NAMES, rotation=20, ha="right")
     ax.set_ylabel("fraction phi_true inside 95% Laplace CI")
-    ax.set_title("E1 cohort coverage (N=12)")
+    ax.set_title(
+        "E1 cohort coverage (N=12); blue = data-informed, "
+        "grey = prior-dominated (coverage vacuous)"
+    )
     ax.set_ylim(0, 1.05)
     for i, b in enumerate(bars):
         txt = f"{coverage[i]:.2f}" if np.isfinite(coverage[i]) else "nan"
@@ -378,8 +448,12 @@ def main():
     # Part 1
     p1 = part1_contraction(patient, phi_true, seed=0)
 
+    # Derive the data-informed set from the rich-regime contraction (NOT assumed).
+    ratio_rich = p1["rich"]["ratio"]
+    informed_idx = [i for i in range(5) if ratio_rich[i] <= INFORMED_RATIO_THR]
+
     # Part 2
-    coverage, n_valid = part2_coverage(n=12, seed=1)
+    coverage, n_valid = part2_coverage(informed_idx, n=12, seed=1)
 
     # Part 3
     profiles = part3_profiles(patient, phi_true, p1["rich"], n_grid=15)
@@ -393,32 +467,31 @@ def main():
     f_coverage = os.path.join(_FIG_DIR, "e1_coverage.png")
     fig_contraction(p1["rich"], f_contraction)
     fig_profiles(profiles, f_profiles)
-    fig_coverage(coverage, f_coverage)
+    fig_coverage(coverage, informed_idx, f_coverage)
     for f in (f_contraction, f_profiles, f_coverage):
         sz = os.path.getsize(f) if os.path.exists(f) else -1
         print(f"  saved {f} ({sz} bytes)")
 
     # Summary
-    ratio_rich = p1["rich"]["ratio"]
-    identifiable = [PHI_NAMES[i] for i in range(5) if ratio_rich[i] < 1.0]
-    weak = [PHI_NAMES[i] for i in range(5) if ratio_rich[i] >= 1.0]
+    informed = [PHI_NAMES[i] for i in informed_idx]
+    prior_dom = [PHI_NAMES[i] for i in range(5) if i not in informed_idx]
     profile_id = [PHI_NAMES[p["idx"]] for p in profiles if p["crosses"]]
 
     print("\n" + "=" * 72)
     print("SUMMARY")
     print("=" * 72)
-    print(
-        f"  Identifiable (Laplace contraction, rich): {identifiable}"
-    )
-    print(f"  Weakly identified (~prior):               {weak}")
-    print(f"  Profile likelihood crosses 1.92 for:      {profile_id}")
+    print(f"  Data-informed (rich Laplace contraction <= {INFORMED_RATIO_THR}): {informed}")
+    print(f"  Prior-dominated (rich):                          {prior_dom}")
+    print(f"  Likelihood-only profile crosses 1.92 (data-id):  {profile_id}")
     print("  Cohort coverage (95% Laplace CI, N=12):")
     for i, name in enumerate(PHI_NAMES):
         cov_str = f"{coverage[i]:.3f}" if np.isfinite(coverage[i]) else "nan"
-        tag = "well-id" if i in WELL_ID else "weak-id"
+        tag = "data-informed" if i in informed_idx else "prior-dominated"
         print(f"     {name:<14} {cov_str}  ({tag})")
     print(
-        "\n  Compare the contraction and profile diagnostics above."
+        "\n  Diagnostics (they need not coincide):\n"
+        f"    - posterior contraction (rich) concentrates on: {informed}\n"
+        f"    - likelihood-only profile crosses 95% (1 dof) for: {profile_id}"
     )
     print(f"\n  total wall time: {time.time() - t_start:.1f}s")
 
