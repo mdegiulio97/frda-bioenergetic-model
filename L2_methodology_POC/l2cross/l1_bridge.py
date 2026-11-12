@@ -17,7 +17,6 @@ _PILOT_DIR = os.path.normpath(
 if _PILOT_DIR not in sys.path:
     sys.path.insert(0, _PILOT_DIR)
 
-import frda_pilot  # noqa: E402
 from frda_pilot import Params, Knobs, phenotype  # noqa: E402
 
 # Weight of ROS in the (ATP, ROS) reserve form rho_raw = ATP / (ATP + K_ROS*ROS).

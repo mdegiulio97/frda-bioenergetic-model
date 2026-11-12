@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from l2cross import priors  # noqa: E402
 from l2cross.l1_bridge import make_patient  # noqa: E402
 from l2cross.generator import full_schedule, generate_dataset, sample_cohort  # noqa: E402
-from l2cross.inference import fit_map, fit_cohort  # noqa: E402
+from l2cross.inference import fit_map  # noqa: E402
 from l2cross.identifiability import profile_likelihood, THRESHOLD_1DOF  # noqa: E402
 
 

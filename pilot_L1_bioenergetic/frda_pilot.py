@@ -23,7 +23,6 @@ Knobs: F frataxin (disease) · u_sub substrate · u_fe medium iron · u_aox anti
 """
 
 from dataclasses import dataclass
-import numpy as np
 from scipy.integrate import solve_ivp
 
 

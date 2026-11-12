@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from l2cross import model, priors
+from l2cross import priors
 from l2cross.generator import full_schedule, generate_dataset
 from l2cross.inference import fit_map
 from l2cross.l1_bridge import make_patient

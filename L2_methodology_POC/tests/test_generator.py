@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from l2cross import generator, model, priors
+from l2cross import model
 from l2cross.generator import (
     Schedule,
     full_schedule,
