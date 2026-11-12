@@ -25,7 +25,7 @@ The full test suite takes a few minutes on CPU.
 - The cellular model is deliberately reduced: it is not the full Cortassa & Aon mitochondrial model (PMID 22057575), and several parameters are only weakly constrained by the available published readouts (see the profile-likelihood figure).
 - Calibration targets come from different cell types and conditions; some are qualitative.
 - The progression model is studied on synthetic data only.
-- Fisher-information and Cramér-Rao computations involve near-singular matrices; results depend on numerical precision. JAX is pinned to the 0.10 series, the version the tests were developed with; with JAX 0.12 two Cramér-Rao tests fail.
+- Fisher-information and Cramér-Rao computations use a float32 Jacobian and invert near-singular matrices, so results depend on numerical precision and platform. JAX is pinned to the 0.10 series, the version the code was developed with. The Cramér-Rao positivity test is marked as an expected failure: it passes on Windows with JAX 0.10 and fails on Linux CI (and with JAX 0.12). Moving the Fisher computation to float64 is the proper fix and is left open because it changes the numbers of the experiments.
 - Not for clinical use.
 
 ## License
