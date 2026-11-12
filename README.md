@@ -1,5 +1,7 @@
 # frda-bioenergetic-model
 
+[![CI](https://github.com/mdegiulio97/frda-bioenergetic-model/actions/workflows/ci.yml/badge.svg)](https://github.com/mdegiulio97/frda-bioenergetic-model/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Mechanistic models of Friedreich's ataxia (FRDA) at two scales, with identifiability analysis.
 
 - **Cellular bioenergetics** (`pilot_L1_bioenergetic/`): a reduced ODE model with five states (Fe-S cluster pool, mitochondrial labile iron, ROS, NADH, NRF2 activity) driven by frataxin level. It reproduces the qualitative FRDA signature (lower ATP and aconitase activity, iron accumulation, higher ROS) and the direction of known interventions (NRF2 induction, NAD+ precursors). It is calibrated by least squares on fold-changes reported in published FRDA studies (PMIDs in `calibrate.py` and `fit_real_data.py`), with bootstrap uncertainty and profile likelihood for practical identifiability.
